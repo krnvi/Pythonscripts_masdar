@@ -1,0 +1,170 @@
+#/usr/bin/python
+# script for extracting data frpm WRF UPP output and write TAF for Abu Dhabi airport.
+# sends TAF as a mail .
+# date:24/05/17
+#####################################################################################################################################
+
+import sys ; import numpy as np ; import datetime as dt ; from scipy.interpolate import interp2d
+import netCDF4 as nf ; from pytz import timezone
+
+############################################### Defining location, files ############################################################
+
+main='/home/vkvalappil/Data/' ; scripts=main+'workspace/pythonScripts/' ; output='/home/oceanColor/Fog/WRFmodel_forecast/TAF/'
+inp='/home/oceanColor/Fog/WRFmodel_forecast/wrfouput_weatherforcast/Archivenetcdf/' ; 
+date=dt.datetime.now().strftime('%Y%m%d')+'06' ; outFle=output+'wrf_TAF_'+date+'.txt' ; lstFle=scripts+'master_uae.csv'
+
+#date=str(sys.argv[1]) ; outFle=output+'wrf_TAF_'+date+'.txt'; lstFle=scripts+'master_uae.csv'
+wndFle=inp+'windspeed_'+date+'.nc';visFle=inp+'Visibility_'+date+'.nc';uwndFle=inp+'windUcomp_'+date+'.nc';vwndFle=inp+'windVcomp_'+date+'.nc'
+
+email_id=["mtemimi@masdar.ac.ae","mjweston@masdar.ac.ae","jzhao@masdar.ac.ae","nchaouch@masdar.ac.ae","vkvalappil@masdar.ac.ae"] 
+#email_id=["vineethpk202@gmail.com","vkvalappil@masdar.ac.ae"]
+##############################################Send mail as text ########################################################################
+
+def sendmail(file_taf,email_list) :
+           from smtplib import SMTP ; from smtplib import SMTPException ; 
+           from email.mime.multipart import MIMEMultipart ; from email.mime.text import MIMEText      
+
+           _from         =   "alerts.cesamlab@gmail.com" ;
+           _to           =   email_list;
+           _sub          =   "TAF (WRF CESAM LAB)  "
+           _attach       =   file_taf
+           #_content      =   "WRF TAF DATA"
+           _username     =   'alerts.cesamlab' ;
+           _password     =   'alert@123'
+           _smtp         = "smtp.gmail.com:587" ;
+           #_text_subtype = "plain"
+
+           mail=MIMEMultipart()
+           mail["Subject"]  =  _sub
+           mail["From"]     =  _from
+           mail["To"]       =  ','.join(_to)
+           #body = MIMEMultipart('alternative')
+           #body.attach(MIMEText(_content, _text_subtype ))
+           mail.attach(MIMEText(file(_attach).read()))
+           try:
+               smtpObj = SMTP(_smtp)
+               #Identify yourself to GMAIL ESMTP server.
+               smtpObj.ehlo()
+               #Put SMTP connection in TLS mode and call ehlo again.
+               smtpObj.starttls()
+               smtpObj.ehlo()
+               #Login to service
+               smtpObj.login(user=_username, password=_password)
+               #Send email
+               smtpObj.sendmail(_from, _to, mail.as_string())
+               #close connection and session.
+               smtpObj.quit()
+           except SMTPException as error:
+               print "Error: unable to send email :  {err}".format(err=error)   
+
+################################################# Reads Data from WRF UPP outputs ######################################################
+ncfile=nf.Dataset(wndFle,'r') ; 
+lat=ncfile.variables['lat'][:] ; lon=ncfile.variables['lon'][:] ; 
+wspd=ncfile.variables['wspeed'][:] ; tim=ncfile.variables['time'][:] ;tim_unit=ncfile.variables['time'].units
+ncfile.close()
+
+ncfile=nf.Dataset(visFle,'r') ; vis=ncfile.variables['visib'][:] ;  ncfile.close()
+ncfile=nf.Dataset(uwndFle,'r') ; uwnd=ncfile.variables['u10m'][:] ; ncfile.close()
+ncfile=nf.Dataset(vwndFle,'r') ; vwnd=ncfile.variables['v10m'][:] ; ncfile.close()
+
+##############################################   Extracting Data and interpolating to locations ###########################################
+lst_f=np.genfromtxt(lstFle,delimiter=',', dtype="S") ; lst_f=lst_f[lst_f[:,0].argsort(kind='mergesort')]  
+points=lst_f[:,1:3].astype(float) ; noloc=points.shape[0] 
+
+date_list=[d.strftime('%Y%m%d%H') for d in nf.num2date(tim,units = tim_unit)] ; date_list=np.vstack(np.tile(date_list,noloc))
+
+tid=np.vstack(np.repeat(lst_f[:,0],73))  ; pre_mat=np.concatenate([tid,date_list],axis=1)
+
+stim=0 ; etim=73 ; tint=1
+ws=np.empty((0,noloc)) ; u=np.empty((0,noloc)) ; v=np.empty((0,noloc)) ; visib=np.empty((0,noloc))
+
+for i in range(stim,etim):
+    wspd_f=interp2d(lon,lat, wspd[i,:,:],kind='linear',copy=False,bounds_error=True ) ; 
+    uwnd_f=interp2d(lon,lat, uwnd[i,:,:],kind='linear',copy=False,bounds_error=True ) ; 
+    vwnd_f=interp2d(lon,lat, vwnd[i,:,:],kind='linear',copy=False,bounds_error=True ) ; 
+    vis_f=interp2d(lon,lat, vis[i,:,:],kind='linear',copy=False,bounds_error=True ) ; 
+    
+    ws=np.concatenate([ws,(np.array([wspd_f(ii[1],ii[0]) for ii in points[:]])).T],axis=0)
+    u=np.concatenate([u,(np.array([uwnd_f(ii[1],ii[0]) for ii in points[:]])).T],axis=0)
+    v=np.concatenate([v,(np.array([vwnd_f(ii[1],ii[0]) for ii in points[:]])).T],axis=0)
+    visib=np.concatenate([visib,(np.array([vis_f(ii[1],ii[0]) for ii in points[:]])).T],axis=0)
+
+wdir=np.round(270-(np.arctan2(v,u))*(180/3.14)).astype(int)   ; wdir[wdir>360]=wdir[wdir>360]-360
+
+wdir=np.round(wdir[0::tint]).astype(int) ; wdir=np.vstack(wdir.flatten('F'))
+wispd=np.round(ws[0::tint]).astype(int) ; wispd=np.vstack(wispd.flatten('F'))
+vis1=np.round(visib[0::tint]/1000).astype(int) ; vis1=np.vstack(vis1.flatten('F'))
+
+wispd_km=wispd*3.6 ; wispd_mi=wispd*2.25 ; wispd_kn=wispd*1.94
+
+#wind short and long 
+wndshrt=np.empty((wdir.shape[0],wdir.shape[1])).astype("S") ; wndlong=np.empty((wdir.shape[0],wdir.shape[1])).astype("S")
+wndshrt[(wdir >25)  & (wdir <=70)]="NE"   ; wndlong[(wdir >25)  & (wdir <=70)]="NorthEast"
+wndshrt[(wdir >70)  & (wdir <=110)]="E"   ; wndlong[(wdir >70)  & (wdir <=110)]="East"
+wndshrt[(wdir >110) & (wdir <=160)]="SE"  ; wndlong[(wdir >110) & (wdir <=160)]="SouthEast"
+wndshrt[(wdir >160) & (wdir <=200)]="S"   ; wndlong[(wdir >160) & (wdir <=200)]="South"
+wndshrt[(wdir >200) & (wdir <=250)]="SW"  ; wndlong[(wdir >200) & (wdir <=250)]="SouthWest"
+wndshrt[(wdir >250) & (wdir <=290)]="W"   ; wndlong[(wdir >250) & (wdir <=290)]="West"
+wndshrt[(wdir >290) & (wdir <=340)]="NW"  ; wndlong[(wdir >290) & (wdir <=340)]="NorthWest"
+wndshrt[((wdir >340) & (wdir <=360)) |((wdir >0) & (wdir <=25))]="N"  ;
+wndlong[((wdir >340) & (wdir <=360)) |((wdir >0) & (wdir <=25))]="North"
+
+fin_mat=np.concatenate([pre_mat,wispd,wispd_km,wispd_mi,wispd_kn,wdir,wndshrt,vis1],axis=1)
+
+req_data_1=fin_mat[0:4,:] ; req_data_2=fin_mat[3:7,:] ;  # choosing data for AbuDhabi  for required time ; need to change later , location wise 
+                                                         # seperation has to be done 
+################################################# Writing TAF ####################################################################
+
+d_1=((dt.datetime.strptime(req_data_1[0,1],'%Y%m%d%H')).replace(tzinfo=timezone('UTC'))).strftime('%H%M %Z %d %b %Y')
+d_2=((dt.datetime.strptime(req_data_1[0,1],'%Y%m%d%H')).replace(tzinfo=timezone('UTC'))).strftime('%d%H%M')+'Z'
+d_3=((dt.datetime.strptime(req_data_1[0,1],'%Y%m%d%H')).replace(tzinfo=timezone('UTC'))).strftime('%H%M')
+d_4=((dt.datetime.strptime(req_data_1[-1,1],'%Y%m%d%H')).replace(tzinfo=timezone('UTC'))).strftime('%H%M %d %b %Y')
+
+wd=(req_data_1[1,6]) ; wd_shrt=(req_data_1[1,7]) ; ws_m=(req_data_1[1,2]) ; ws_mi=(req_data_1[1,4]) ; 
+ws_kn=(req_data_1[1,5]) ; vis_km=(req_data_1[1,8])
+
+taf_block_1="""  
+WRF CESAM LAB TAF Data  
+Data at: {}
+TAF for:OMAA (Abu Dhabi Intl, --, ER)  issued at {}
+Text:TAF OMAA {} 0306/0412 20006KT 8000 NSC
+Forecast period:{} to {}
+Forecast type:FROM: standard forecast or significant change
+Winds:from the {} ({} degrees) at   {} MPH ({} knots;  {} m/s)
+Visibility:   (  {} km)
+Clouds:missing  """.format(d_1,d_2,d_3,d_3,d_4,wd_shrt,wd,ws_mi,ws_kn,ws_m,vis_km)
+
+####################################################################################################################################
+
+d_1=((dt.datetime.strptime(req_data_2[0,1],'%Y%m%d%H')).replace(tzinfo=timezone('UTC'))).strftime('%H%M %Z %d %b %Y')
+d_2=((dt.datetime.strptime(req_data_2[0,1],'%Y%m%d%H')).replace(tzinfo=timezone('UTC'))).strftime('%d%H%M')+'Z'
+d_3=((dt.datetime.strptime(req_data_2[0,1],'%Y%m%d%H')).replace(tzinfo=timezone('UTC'))).strftime('%H%M')
+d_4=((dt.datetime.strptime(req_data_2[-1,1],'%Y%m%d%H')).replace(tzinfo=timezone('UTC'))).strftime('%H%M %d %b %Y')
+
+wd=(req_data_2[1,6]) ; wd_shrt=(req_data_2[1,7]) ; ws_m=(req_data_2[1,2]) ; ws_mi=(req_data_2[1,4]) ; 
+ws_kn=(req_data_2[1,5]) ; vis_km=(req_data_2[1,8])
+
+taf_block_2="""
+Text:BECMG 0309/0311 34013KT
+Forecast period:{} to {}
+Forecast type:BECOMING: Conditions expected to become as follows by {}
+Winds:from the {} ({} degrees) at  {} MPH ({} knots;  {} m/s)
+Visibility:   (  {} km)
+Clouds:missing """.format(d_1,d_4,d_1,wd_shrt,wd,ws_mi,ws_kn,ws_m,vis_km)
+
+#################################################Save TAF and Send as mail ###############################################################
+
+taf_block=taf_block_1+'\n'+taf_block_2
+
+file1=open(outFle,'w') ; file1.write(taf_block) ; file1.close()
+sendmail(outFle,email_id)
+quit()
+
+
+
+
+
+
+
+
+
